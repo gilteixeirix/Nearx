@@ -1,256 +1,148 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.20;
 
-/// @title IPTU - Lançamento e Pagamento de IPTU com repasse à Prefeitura
-/// @author ...
-/// @notice Exemplo educativo. Faça auditoria antes de usar em produção.
-contract IPTU {
-    /*//////////////////////////////////////////////////////////////
-                              ERROS
-    //////////////////////////////////////////////////////////////*/
-    error NotOwner();
-    error NotPrefeitura();
-    error InvalidParams();
-    error AlreadyExists();
-    error NotFound();
-    error ParcelAlreadyPaid();
-    error WrongAmount();
-    error NotActive();
-    error InvalidParcel();
-    error WrongContribuinte();
+import "forge-std/Test.sol";
+import "../src/IPTU.sol";
 
-    /*//////////////////////////////////////////////////////////////
-                           CONTROLO DE ACESSO
-    //////////////////////////////////////////////////////////////*/
-    address public owner;
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-    modifier onlyPrefeitura() {
-        if (msg.sender != prefeitura) revert NotPrefeitura();
-        _;
-    }
-    /*//////////////////////////////////////////////////////////////
-                         PROTEÇÃO REENTRÂNCIA
-    //////////////////////////////////////////////////////////////*/
-    uint256 private _status;
-    modifier nonReentrant() {
-        require(_status != 2, "REENTRANCY");
-        _status = 2;
-        _;
-        _status = 1;
+contract IPTUTest is Test {
+    IPTU iptu;
+
+    address owner = address(this);
+    address prefeitura = address(0xBEEF);
+    address contribuinte = address(0xCAFE);
+    address atacante = address(0xDEAD);
+
+    bytes32 public lancId;
+
+    function setUp() public {
+        iptu = new IPTU(prefeitura);
+        vm.deal(contribuinte, 10 ether);
+        vm.deal(atacante, 10 ether);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            DADOS DO IPTU
-    //////////////////////////////////////////////////////////////*/
-    address public prefeitura; // carteira oficial que recebe os valores
-
-
-    struct Lancamento {
-        // Identificação básica
-        string inscricao;         // inscrição municipal/cadastro do imóvel (texto curto)
-        address contribuinte;     // responsável pelo pagamento
-        uint256 ano;              // exercício (ex.: 2025)
-
-        // Valores
-        uint256 total;            // valor total do IPTU no ano (em wei)
-        uint256 parcelas;         // número de parcelas
-        uint256 valorParcela;     // valor fixo por parcela (simplificado)
-        uint256 pagas;            // quantidade de parcelas já pagas
-        uint256 valorPago;        // soma já paga
-
-        // Estado
-        bool ativo;               // permite bloquear um lançamento
-        mapping(uint256 => bool) parcelaPaga; // parcela -> paga?
-       
-    }
-
-    // id = keccak256(inscricao, contribuinte, ano) para localizar rapidamente
-    mapping(bytes32 => Lancamento) private _lanc;
-
-    /*//////////////////////////////////////////////////////////////
-                                 EVENTOS
-    //////////////////////////////////////////////////////////////*/
-    event PrefeituraAtualizada(address indexed antiga, address indexed nova);
-    event Lancado(bytes32 indexed id, string inscricao, address indexed contribuinte, uint256 ano, uint256 total, uint256 parcelas, uint256 valorParcela);
-    event ParcelaPaga(bytes32 indexed id, uint256 indexed parcela, address indexed pagador, uint256 valor, uint256 timestamp);
-    event RepasseEfetuado(address indexed para, uint256 valor);
-
-    /*//////////////////////////////////////////////////////////////
-                               CONSTRUTOR
-    //////////////////////////////////////////////////////////////*/
-    constructor(address _prefeitura) {
-        require(_prefeitura != address(0), "prefeitura zero");
-        owner = msg.sender;
-        prefeitura = _prefeitura;
-        _status = 1;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                       FUNCOES ADMINISTRATIVAS
+                            HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Atualiza a carteira de recebimento da prefeitura
-    function atualizarPrefeitura(address nova) external onlyOwner {
-        require(nova != address(0), "prefeitura zero");
-        emit PrefeituraAtualizada(prefeitura, nova);
-        prefeitura = nova;
-    }
-
-    /// @notice Lança um IPTU para um contribuinte em um determinado ano
-    /// @dev Por simplicidade, exige total divisível pelo número de parcelas
-    function lancarIPTU(
-        string calldata inscricao,
-        address contribuinte,
-        uint256 ano,
-        uint256 total,
-        uint256 parcelas
-    ) external onlyPrefeitura returns (bytes32 id) {
-        if (
-            bytes(inscricao).length == 0 ||
-            contribuinte == address(0) ||
-            ano == 0 || total == 0 || parcelas == 0
-        ) revert InvalidParams();
-
-        id = _makeId(inscricao,  ano);
-
-        // Para evitar colisões: se já existe e está ativo, não permitir
-        if (_exists(id)) revert AlreadyExists();
-
-        uint256 valorParcela = total / parcelas;
-        if (valorParcela * parcelas != total) revert InvalidParams(); // requer divisão exata
-
-        // Inicializa struct em storage
-        Lancamento storage L = _lanc[id];
-        L.inscricao = inscricao;
-        L.contribuinte = contribuinte;
-        L.ano = ano;
-        L.total = total;
-        L.parcelas = parcelas;
-        L.valorParcela = valorParcela;
-        L.ativo = true;
-    
-        emit Lancado(id, inscricao, contribuinte, ano, total, parcelas, valorParcela);
-    }
-
-    /// @notice Ativa/desativa um lançamento (por ex., em caso de cancelamento ou contestação)
-    function setAtivo(bytes32 id, bool ativo) external onlyOwner {
-        Lancamento storage L = _requireLanc(id);
-        L.ativo = ativo;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                      PAGAMENTO E REPASSE À PREFEITURA
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Paga uma parcela específica do IPTU
-    /// @param id Identificador do lançamento (retornado em `lancarIPTU`)
-    /// @param parcela Número da parcela (1..N)
-    function pagarParcela(bytes32 id, uint256 parcela)
-        external
-        payable
-        nonReentrant
-    {
-        Lancamento storage L = _requireLanc(id);
-        if (!L.ativo) revert NotActive();
-        if (parcela == 0 || parcela > L.parcelas) revert InvalidParcel();
-        if (L.parcelaPaga[parcela]) revert ParcelAlreadyPaid();
-        if (msg.value != L.valorParcela) revert WrongAmount();
-        if (msg.sender != L.contribuinte) revert WrongContribuinte();
-
-        // Marca como paga
-        L.parcelaPaga[parcela] = true;
-        L.pagas += 1;
-        L.valorPago += msg.value;
-
-        emit ParcelaPaga(id, parcela, msg.sender, msg.value, block.timestamp);
-
-        // Repasse imediato à prefeitura
-        (bool ok, ) = payable(prefeitura).call{value: msg.value}("");
-        require(ok, "Falha no repasse");
-       
-        emit RepasseEfetuado(prefeitura, msg.value);
-
-    }
-
-    /// @notice Função alternativa para repassar eventual saldo acumulado no contrato (caso algum pagamento tenha ficado retido por qualquer motivo)
-    function repassarSaldo() external onlyOwner nonReentrant {
-        uint256 bal = address(this).balance;
-        if (bal > 0) {
-            (bool ok, ) = payable(prefeitura).call{value: bal}("");
-            require(ok, "Falha no repasse");
-            emit RepasseEfetuado(prefeitura, bal);
-        }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                           CONSULTAS (VIEW)
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Consulta resumo (sem o mapa de parcelas) para interfaces
-    function getResumo(bytes32 id)
-        external
-        view
-        returns (
-            string memory inscricao,
-            address contribuinte,
-            uint256 ano,
-            uint256 total,
-            uint256 parcelas,
-            uint256 valorParcela,
-            uint256 pagas,
-            uint256 valorPago,
-            bool ativo
-        )
-    {
-        Lancamento storage L = _requireLanc(id);
-        return (
-            L.inscricao,
-            L.contribuinte,
-            L.ano,
-            L.total,
-            L.parcelas,
-            L.valorParcela,
-            L.pagas,
-            L.valorPago,
-            L.ativo
+    function lancar() internal {
+        vm.prank(prefeitura);
+        lancId = iptu.lancarIPTU(
+            "ABC123",
+            contribuinte,
+            2025,
+            1 ether,
+            4
         );
     }
 
-    /// @notice Verifica se uma parcela específica já foi paga
-    function parcelaEstaPaga(bytes32 id, uint256 parcela) external view returns (bool) {
-        Lancamento storage L = _requireLanc(id);
-        if (parcela == 0 || parcela > L.parcelas) revert InvalidParcel();
-        return L.parcelaPaga[parcela];
+    /*//////////////////////////////////////////////////////////////
+                           TESTES BÁSICOS
+    //////////////////////////////////////////////////////////////*/
+
+    function testOwnerInicial() public {
+        assertEq(iptu.owner(), owner);
+    }
+
+    function testPrefeituraInicial() public {
+        assertEq(iptu.prefeitura(), prefeitura);
+    }
+
+    function testLancarIPTU() public {
+        vm.prank(prefeitura);
+        bytes32 id = iptu.lancarIPTU("XYZ", contribuinte, 2025, 1 ether, 2);
+        (
+            string memory inscricao,
+            address contrib,
+            uint256 ano,
+            uint256 total,
+            uint256 parcelas,
+            ,
+            ,
+            ,
+            bool ativo
+        ) = iptu.getResumo(id);
+        assertEq(inscricao, "XYZ");
+        assertEq(contrib, contribuinte);
+        assertEq(ano, 2025);
+        assertEq(total, 1 ether);
+        assertEq(parcelas, 2);
+        assertTrue(ativo);
     }
 
     /*//////////////////////////////////////////////////////////////
-                             HELPERS INTERNOS
+                       PAGAMENTO DE PARCELAS
     //////////////////////////////////////////////////////////////*/
-    function _makeId(string calldata inscricao,  uint256 ano) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(inscricao, ano));
+
+    function testPagarParcela() public {
+        lancar();
+
+        vm.startPrank(contribuinte);
+        vm.expectEmit(true, true, true, true);
+        emit IPTU.ParcelaPaga(lancId, 1, contribuinte, 0.25 ether, block.timestamp);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 1);
+        vm.stopPrank();
+
+        assertTrue(iptu.parcelaEstaPaga(lancId, 1));
+        (,,,,,,,uint256 valorPago,) = iptu.getResumo(lancId);
+        assertEq(valorPago, 0.25 ether);
     }
 
-    function _exists(bytes32 id) internal view returns (bool) {
-        // Como string default é vazia, checamos pelo contribuinte
-        return _lanc[id].contribuinte != address(0);
+    function testNaoAceitaValorErrado() public {
+        lancar();
+        vm.prank(contribuinte);
+        vm.expectRevert(IPTU.WrongAmount.selector);
+        iptu.pagarParcela{value: 0.1 ether}(lancId, 1);
     }
 
-    function _requireLanc(bytes32 id) internal view returns (Lancamento storage) {
-        Lancamento storage L = _lanc[id];
-        if (L.contribuinte == address(0)) revert NotFound();
-        return L;
+    function testParcelaInvalida() public {
+        lancar();
+        vm.prank(contribuinte);
+        vm.expectRevert(IPTU.InvalidParcel.selector);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 0);
+    }
+
+    function testParcelaJaPaga() public {
+        lancar();
+        vm.startPrank(contribuinte);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 1);
+        vm.expectRevert(IPTU.ParcelAlreadyPaid.selector);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 1);
+        vm.stopPrank();
     }
 
     /*//////////////////////////////////////////////////////////////
-                       TRANSFERÊNCIA DE PROPRIEDADE
+                       CONTROLE DE ACESSO
     //////////////////////////////////////////////////////////////*/
-    /// @notice Transfere a titularidade do contrato (admin)
-    function transferOwnership(address novoOwner) external onlyOwner {
-        require(novoOwner != address(0), "owner zero");
-        owner = novoOwner;
+
+    function testSomentePrefeituraPodeLancar() public {
+        vm.expectRevert(IPTU.NotPrefeitura.selector);
+        iptu.lancarIPTU("ERR", contribuinte, 2025, 1 ether, 1);
+    }
+
+    function testSomenteOwnerPodeRepassar() public {
+        lancar();
+        vm.prank(contribuinte);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 1);
+        vm.prank(atacante);
+        vm.expectRevert(IPTU.NotOwner.selector);
+        iptu.repassarSaldo();
+    }
+
+    function testTransferOwnership() public {
+        address novoOwner = address(0xAAAA);
+        iptu.transferOwnership(novoOwner);
+        assertEq(iptu.owner(), novoOwner);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        REENTRÂNCIA (NEGATIVO)
+    //////////////////////////////////////////////////////////////*/
+
+    function testNaoHaReentrancia() public {
+        // contrato malicioso não consegue reentrar
+        lancar();
+        vm.prank(contribuinte);
+        iptu.pagarParcela{value: 0.25 ether}(lancId, 1);
+
     }
 }
-
