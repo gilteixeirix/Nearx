@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyToken - Interface</title>
+<!-- Ethers v5 (estável) -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+
+<!-- OU, se quiser v6 -->
+<!-- <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script> -->
+
+  <style>
+    :root{font-family:Inter, system-ui, Arial; --bg:#0f1724; --card:#0b1220; --accent:#7c3aed; --muted:#94a3b8; color:#e6eef8}
+    body{margin:0;background:linear-gradient(180deg,#071022 0%, #071733 100%);font-family:Inter, Arial, sans-serif;color:var(--muted);}
+    .wrap{max-width:900px;margin:28px auto;padding:20px}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+    h1{color:#fff;margin:0;font-size:20px}
+    .card{background:rgba(255,255,255,0.03);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+
+    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+    input[type=text], input[type=number], select{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:var(--muted);box-sizing:border-box}
+    button{background:var(--accent);color:#fff;padding:10px 12px;border:none;border-radius:8px;cursor:pointer}
+    .muted{color:var(--muted);font-size:13px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .small{font-size:13px;color:var(--muted)}
+    pre{white-space:pre-wrap;background:rgba(0,0,0,0.25);padding:8px;border-radius:8px;color:#dcefff}
+    footer{margin-top:16px;text-align:center;color:var(--muted);font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>MyToken (GTX) — Interface MetaMask</h1>
+      <div id="wallet-area" class="muted">MetaMask: <span id="mm-status">desconectado</span></div>
+    </header>
+
+    <section class="card">
+      <label for="contractAddr">Endereço do contrato</label>
+      <input id="contractAddr" type="text" placeholder="0x... (cole aqui o endereço do contrato)" />
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button id="connectBtn">Conectar MetaMask</button>
+        <button id="loadBtn">Carregar contrato</button>
+      </div>
+      <p class="small">No campo abaixo você pode ver mensagens de status.</p>
+      <pre id="status">Aguardando ação...</pre>
+    </section>
+
+    <section id="infoSection" class="card" style="display:none">
+      <div class="row">
+        <div>
+          <label>Contrato</label>
+          <div id="cAddress" class="small"></div>
+        </div>
+        <div>
+          <label>Rede</label>
+          <div id="network" class="small"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px">
+        <label>Nome / Símbolo / Decimals</label>
+        <div id="meta" class="small"></div>
+      </div>
+
+      <div style="margin-top:8px">
+        <label>Saldo (da conta conectada)</label>
+        <div id="balance" class="small">-</div>
+      </div>
+
+      <div style="margin-top:8px">
+        <label>Total supply</label>
+        <div id="supply" class="small">-</div>
+      </div>
+    </section>
+
+    <section id="actions" class="card" style="display:none">
+      <h3 style="color:#fff;margin-top:0">Ações</h3>
+
+      <div style="margin-bottom:12px">
+        <label>Transferir tokens</label>
+        <div class="row">
+          <input id="toAddr" type="text" placeholder="Endereço destino" />
+          <input id="amountTransfer" type="number" placeholder="Quantidade (ex: 1.5)" step="any" />
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button id="transferBtn">Enviar</button>
+          <button id="refreshBalBtn">Atualizar Saldo</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label>Burn (queimar do seu saldo)</label>
+        <div class="row">
+          <input id="burnAmount" type="number" placeholder="Quantidade (ex: 0.5)" step="any" />
+          <div></div>
+        </div>
+        <div style="margin-top:8px">
+          <button id="burnBtn">Queimar</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label>Mint (somente owner)</label>
+        <div class="row">
+          <input id="mintTo" type="text" placeholder="Endereço que receberá" />
+          <input id="mintAmount" type="number" placeholder="Quantidade (ex: 100)" step="any" />
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button id="mintBtn">Mintar</button>
+          <button id="checkOwnerBtn">Verificar owner</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label>Pause / Unpause (somente owner)</label>
+        <div style="display:flex;gap:8px">
+          <button id="pauseBtn">Pausar</button>
+          <button id="unpauseBtn">Despausar</button>
+          <div style="align-self:center;color:var(--muted);margin-left:8px">Estado: <span id="pausedState">-</span></div>
+        </div>
+      </div>
+
+    </section>
+
+    <footer class="muted">Obs: converta valores para as unidades mínimas com base em <code>decimals()</code>. A interface faz a conversão automaticamente.</footer>
+  </div>
+
+  <script>
+    // ABI mínimo utilizado (aproximado) — ajuste se o seu contrato tiver nomes/assinaturas diferentes
+    const ABI = [
+      "function name() view returns (string)",
+      "function symbol() view returns (string)",
+      "function decimals() view returns (uint8)",
+      "function totalSupply() view returns (uint256)",
+      "function balanceOf(address) view returns (uint256)",
+      "function transfer(address to, uint256 amount) returns (bool)",
+      "function burn(uint256 amount)",
+      "function mint(address to, uint256 amount)",
+      "function pause()",
+      "function unpause()",
+      "function owner() view returns (address)",
+      "function paused() view returns (bool)"
+    ];
+
+    let provider, signer, contract, decimalsVal = 18;
+
+    const connectBtn = document.getElementById('connectBtn');
+    const loadBtn = document.getElementById('loadBtn');
+    const statusEl = document.getElementById('status');
+    const mmStatus = document.getElementById('mm-status');
+
+    connectBtn.onclick = async () => {
+      if (!window.ethereum) {
+        alert('MetaMask não detectado. Instale/ative a extensão.');
+        return;
+      }
+      try {
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        signer = provider.getSigner();
+        const address = await signer.getAddress();
+        mmStatus.textContent = address;
+        status('Conectado: ' + shorten(address));
+        // listen for chain/account changes
+        window.ethereum.on('accountsChanged', handleAccountsChanged);
+        window.ethereum.on('chainChanged', handleChainChanged);
+      } catch (err) {
+        status('Erro ao conectar: ' + (err.message || err));
+      }
+    }
+
+    loadBtn.onclick = async () => {
+      const addr = document.getElementById('contractAddr').value.trim();
+      if (!addr) { status('Forneça o endereço do contrato.'); return; }
+      if (!ethers.utils.isAddress(addr)) { status('Endereço inválido.'); return; }
+      if (!provider) {
+        status('Conecte o MetaMask primeiro.'); return;
+      }
+      contract = new ethers.Contract(addr, ABI, signer);
+      document.getElementById('infoSection').style.display = 'block';
+      document.getElementById('actions').style.display = 'block';
+      document.getElementById('cAddress').textContent = addr;
+      try {
+        const network = await provider.getNetwork();
+        document.getElementById('network').textContent = network.name + ' (chainId: ' + network.chainId + ')';
+
+        const [name, symbol, dec, total, paused, ownerAddr] = await Promise.all([
+          contract.name().catch(()=>"-"),
+          contract.symbol().catch(()=>"-"),
+          contract.decimals().catch(()=>18),
+          contract.totalSupply().catch(()=>0),
+          contract.paused().catch(()=>false),
+          contract.owner().catch(()=>null),
+        ]);
+        decimalsVal = Number(dec);
+        document.getElementById('meta').textContent = `${name} / ${symbol} / decimals: ${decimalsVal}`;
+        document.getElementById('supply').textContent = formatUnits(total, decimalsVal) + ' ' + symbol;
+        document.getElementById('pausedState').textContent = paused ? 'PAUSADO' : 'ATIVO';
+        document.getElementById('status').textContent = 'Contrato carregado. Owner: ' + (ownerAddr||'-');
+
+        await refreshBalance();
+      } catch (err) {
+        status('Erro ao carregar dados do contrato: ' + (err.message||err));
+      }
+    }
+
+    async function refreshBalance() {
+      try {
+        const addr = await signer.getAddress();
+        const bal = await contract.balanceOf(addr);
+        document.getElementById('balance').textContent = formatUnits(bal, decimalsVal);
+        status('Saldo atualizado');
+      } catch (err) {
+        status('Erro ao buscar saldo: ' + (err.message||err));
+      }
+    }
+
+    document.getElementById('refreshBalBtn').onclick = refreshBalance;
+
+    document.getElementById('transferBtn').onclick = async () => {
+      const to = document.getElementById('toAddr').value.trim();
+      const amount = document.getElementById('amountTransfer').value;
+      if (!ethers.utils.isAddress(to)) { alert('Endereço destino inválido'); return; }
+      if (!amount || Number(amount) <= 0) { alert('Quantidade inválida'); return; }
+      try {
+        const amt = parseUnits(amount, decimalsVal);
+        const tx = await contract.transfer(to, amt);
+        status('Transação enviada. Hash: ' + tx.hash);
+        await tx.wait();
+        status('Transferência confirmada.');
+        await refreshBalance();
+      } catch (err) {
+        status('Erro na transferência: ' + (err.message||err));
+      }
+    }
+
+    document.getElementById('burnBtn').onclick = async () => {
+      const amount = document.getElementById('burnAmount').value;
+      if (!amount || Number(amount) <= 0) { alert('Quantidade inválida'); return; }
+      try {
+        const amt = parseUnits(amount, decimalsVal);
+        const tx = await contract.burn(amt);
+        status('Queima enviada. Hash: ' + tx.hash);
+        await tx.wait();
+        status('Queima confirmada.');
+        await refreshBalance();
+      } catch (err) {
+        status('Erro no burn: ' + (err.message||err));
+      }
+    }
+
+    document.getElementById('mintBtn').onclick = async () => {
+      const to = document.getElementById('mintTo').value.trim();
+      const amount = document.getElementById('mintAmount').value;
+      if (!ethers.utils.isAddress(to)) { alert('Endereço inválido'); return; }
+      if (!amount || Number(amount) <= 0) { alert('Quantidade inválida'); return; }
+      try {
+        const amt = parseUnits(amount, decimalsVal);
+        const tx = await contract.mint(to, amt);
+        status('Mint enviada. Hash: ' + tx.hash);
+        await tx.wait();
+        status('Mint confirmada.');
+      } catch (err) {
+        status('Erro no mint: ' + (err.message||err));
+      }
+    }
+
+    document.getElementById('checkOwnerBtn').onclick = async () => {
+      try {
+        const ownerAddr = await contract.owner();
+        status('Owner: ' + ownerAddr);
+      } catch (err) { status('Erro: ' + (err.message||err)); }
+    }
+
+    document.getElementById('pauseBtn').onclick = async () => {
+      try {
+        const tx = await contract.pause();
+        status('Pausa enviada. Hash: ' + tx.hash);
+        await tx.wait();
+        status('Contrato pausado.');
+        document.getElementById('pausedState').textContent = 'PAUSADO';
+      } catch (err) { status('Erro ao pausar: ' + (err.message||err)); }
+    }
+    document.getElementById('unpauseBtn').onclick = async () => {
+      try {
+        const tx = await contract.unpause();
+        status('Unpause enviada. Hash: ' + tx.hash);
+        await tx.wait();
+        status('Contrato despausado.');
+        document.getElementById('pausedState').textContent = 'ATIVO';
+      } catch (err) { status('Erro ao despausar: ' + (err.message||err)); }
+    }
+
+    function status(msg){
+      statusEl.textContent = msg;
+      console.log(msg);
+    }
+
+    function shorten(addr){ return addr ? addr.substr(0,6) + '...' + addr.substr(-4) : '' }
+
+    function parseUnits(amount, dec){
+      try { return ethers.utils.parseUnits(String(amount), dec); }
+      catch(e){ return ethers.BigNumber.from(String(Math.floor(Number(amount) * (10**dec)))); }
+    }
+    function formatUnits(bn, dec){
+      try { return ethers.utils.formatUnits(bn, dec); } catch(e){ return String(bn); }
+    }
+
+    function handleAccountsChanged(accounts){
+      if (accounts.length === 0) { mmStatus.textContent = 'desconectado'; status('Conta desconectada'); }
+      else { mmStatus.textContent = accounts[0]; status('Conta alterada: ' + shorten(accounts[0])); }
+    }
+    function handleChainChanged(chainId){
+      status('Chain changed: ' + chainId);
+      // opcional: recarregar página para reconectar provider
+    }
+
+    // initial check
+    if (window.ethereum) {
+      mmStatus.textContent = 'disponível (não conectado)';
+    } else {
+      mmStatus.textContent = 'MetaMask não detectado';
+    }
+  </script>
+</body>
+</html>
